@@ -324,12 +324,18 @@ const createProvider = (
  * @param uri The URI of the new item
  * @returns The recent item for the URI
  */
+const home = GLib.get_home_dir();
+
 const createRecentItem = (kind: RecentItemKind, uri: string, readablePath?: string): RecentItem => {
   const file = Gio.File.new_for_uri(uri);
+  const parseName = readablePath ?? file.get_parse_name();
+  const displayPath = parseName.startsWith(home)
+    ? "~" + parseName.slice(home.length)
+    : parseName;
   return {
     id: `vscode-search-provider-${uri}`,
     name: file.get_basename() || `<unnamed ${kind}>`,
-    readablePath: readablePath ?? file.get_parse_name(),
+    readablePath: displayPath,
     kind,
     file,
   };
