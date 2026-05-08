@@ -1,7 +1,17 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "outFile": "./extension.js"
+    "outDir": ".",
+    "moduleResolution": "node",
+    "paths": {
+      "gi://GioUnix": ["./types/types/giounix.d.ts"],
+      "gi://GLib": ["./types/types/glib.d.ts"],
+      "gi://Gio": ["./types/types/gio.d.ts"],
+      "gi://St": ["./types/types/st.d.ts"],
+      "gi://GObject": ["./types/types/gobject.d.ts"],
+      "resource:///org/gnome/shell/extensions/extension.js": ["./types/types/gnome-shell.d.ts"],
+      "resource:///org/gnome/shell/ui/main.js": ["./types/types/gnome-shell.d.ts"]
+    }
   },
   "files": ["./extension.ts"],
   "include": ["types/**/*.d.ts"]

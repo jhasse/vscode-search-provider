@@ -19,38 +19,20 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-import ByteArray = imports.byteArray;
-import GLib = imports.gi.GLib;
-import Gio = imports.gi.Gio;
-import St = imports.gi.St;
-
-import Main = imports.ui.main;
-import ExtensionUtils = imports.misc.extensionUtils;
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-const Self = ExtensionUtils.getCurrentExtension()!;
-
-const l = {
-  /**
-   * Log a message from this extension.
-   *
-   * @param message The message to log
-   */
-  info: (message: string): void => log(`${Self.metadata.name}: ${message}`),
-
-  /**
-   * Log an error message from this extension.
-   *
-   * @param message The message to log
-   */
-  error: (message: string): void =>
-    logError(`${Self.metadata.name}: ${message}`),
-};
+import GLib from "gi://GLib";
+import Gio from "gi://Gio";
+import type { AppInfo, File as GioFile, GSettings, Cancellable } from "gi://Gio";
+import GioUnix from "gi://GioUnix";
+import St from "gi://St";
+import type { Icon as StIcon } from "gi://St";
+import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
+import * as Main from "resource:///org/gnome/shell/ui/main.js";
 
 interface CodeAppInfo {
   /**
    * The desktop app providing code.
    */
-  readonly app: Gio.DesktopAppInfo;
+  readonly app: typeof GioUnix.DesktopAppInfo.prototype;
 
   /**
    * The name of the configuration directory of this code app.
@@ -76,9 +58,9 @@ const findVSCode = (): CodeAppInfo | null => {
     ["visual-studio-code.desktop", "Code"],
   ];
   for (const [desktopId, configDirectoryName] of candidates) {
-    const app = Gio.DesktopAppInfo.new(desktopId);
+    const app = GioUnix.DesktopAppInfo.new(desktopId);
     if (app) {
-      l.info(`Found code at desktop app ${desktopId}`);
+      console.log(`Found code at desktop app ${desktopId}`);
       return {
         app,
         configDirectoryName,
@@ -96,13 +78,13 @@ const findVSCode = (): CodeAppInfo | null => {
  * @param vscode The vscode app
  * @param files The file to launch vscode with
  */
-const launchVSCodeInShell = (vscode: Gio.AppInfo, files?: Gio.File[]): void => {
+const launchVSCodeInShell = (vscode: AppInfo, files?: GioFile[]): void => {
   try {
     vscode.launch(files || [], null);
   } catch (err) {
-    const stack = err.stack || "<no stacktrace>";
-    l.error(`Failed to lauch VSCode: ${err.message}\n${stack}`);
-    Main.notifyError("Failed to launch VSCode", err.message);
+    const stack = (err as {stack?: string}).stack || "<no stacktrace>";
+    console.error(`Failed to launch VSCode: ${(err as Error).message}\n${stack}`);
+    Main.notifyError("Failed to launch VSCode", (err as Error).message);
   }
 };
 
@@ -130,7 +112,7 @@ interface RecentItem {
   /**
    * The absolute path of this item.
    */
-  readonly file: Gio.File;
+  readonly file: GioFile;
 
   /**
    * The kind of this item.
@@ -200,7 +182,7 @@ const findMatchingItems = (
  * Get a list of all enabled item kinds from the given settings.
  */
 const getEnabledKinds = (
-  settings: Gio.GSettings
+  settings: GSettings
 ): ReadonlyArray<RecentItemKind> => {
   const kinds: RecentItemKind[] = [];
   if (settings.get_boolean("show-workspaces")) {
@@ -215,7 +197,7 @@ const getEnabledKinds = (
 /**
  * Get the search prefix set in the given settings.
  */
-const getPrefix = (settings: Gio.GSettings): string =>
+const getPrefix = (settings: GSettings): string =>
   settings.get_string("search-prefix");
 
 /**
@@ -254,13 +236,20 @@ const checkAndRemovePrefix = (
  *
  * @param vscode The vscode app providing the icon
  */
-const resultMetaOfRecentItem = (vscode: Gio.DesktopAppInfo) => (
+interface ResultMeta {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly createIcon: (size: number) => StIcon | null;
+}
+
+const resultMetaOfRecentItem = (vscode: typeof GioUnix.DesktopAppInfo.prototype) => (
   item: RecentItem
 ): ResultMeta => ({
   id: item.id,
   name: item.name,
   description: item.readablePath,
-  createIcon: (size): St.Icon | null => {
+  createIcon: (size): StIcon | null => {
     const gicon = vscode.get_icon();
     if (gicon) {
       return new St.Icon({
@@ -281,33 +270,43 @@ const resultMetaOfRecentItem = (vscode: Gio.DesktopAppInfo) => (
  * @param items All recent items of VSCode.
  * @returns A search provider which exposes the given items.
  */
+interface SearchProvider {
+  readonly id: string;
+  readonly isRemoteProvider: boolean;
+  readonly canLaunchSearch: boolean;
+  readonly appInfo: typeof GioUnix.DesktopAppInfo.prototype;
+  getInitialResultSet(terms: string[], cancellable: Cancellable): Promise<string[]>;
+  getSubsearchResultSet(currentResults: string[], terms: string[], cancellable: Cancellable): Promise<string[]>;
+  getResultMetas(ids: string[], cancellable: Cancellable): Promise<ResultMeta[]>;
+  activateResult(id: string, terms: string[]): void;
+  launchSearch(terms: string[]): void;
+  filterResults(results: string[], max: number): string[];
+}
+
 const createProvider = (
-  vscode: Gio.DesktopAppInfo,
-  settings: Gio.GSettings,
+  uuid: string,
+  vscode: typeof GioUnix.DesktopAppInfo.prototype,
+  settings: GSettings,
   items: RecentItems
 ): SearchProvider => ({
-  id: Self.uuid,
+  id: uuid,
   canLaunchSearch: true,
   isRemoteProvider: false,
   appInfo: vscode,
-  getInitialResultSet: (terms, callback): void =>
-    callback(
-      findMatchingItems(
-        Array.from(items.values()),
-        checkAndRemovePrefix(terms, getPrefix(settings)),
-        getEnabledKinds(settings)
-      )
+  getInitialResultSet: async (terms): Promise<string[]> =>
+    findMatchingItems(
+      Array.from(items.values()),
+      checkAndRemovePrefix(terms, getPrefix(settings)),
+      getEnabledKinds(settings)
     ),
-  getSubsearchResultSet: (current, terms, callback): void =>
-    callback(
-      findMatchingItems(
-        lookupRecentItems(items, current),
-        checkAndRemovePrefix(terms, getPrefix(settings)),
-        getEnabledKinds(settings)
-      )
+  getSubsearchResultSet: async (current, terms): Promise<string[]> =>
+    findMatchingItems(
+      lookupRecentItems(items, current),
+      checkAndRemovePrefix(terms, getPrefix(settings)),
+      getEnabledKinds(settings)
     ),
-  getResultMetas: (ids, callback): void =>
-    callback(lookupRecentItems(items, ids).map(resultMetaOfRecentItem(vscode))),
+  getResultMetas: async (ids): Promise<ResultMeta[]> =>
+    lookupRecentItems(items, ids).map(resultMetaOfRecentItem(vscode)),
   launchSearch: (): void => launchVSCodeInShell(vscode),
   activateResult: (id): void => {
     const item = items.get(id);
@@ -325,14 +324,12 @@ const createProvider = (
  * @param uri The URI of the new item
  * @returns The recent item for the URI
  */
-const createRecentItem = (kind: RecentItemKind, uri: string): RecentItem => {
+const createRecentItem = (kind: RecentItemKind, uri: string, readablePath?: string): RecentItem => {
   const file = Gio.File.new_for_uri(uri);
   return {
     id: `vscode-search-provider-${uri}`,
-    // TODO: Check the outcome of get_basename on file URIs
     name: file.get_basename() || `<unnamed ${kind}>`,
-    // TODO: Test what this parse name thing actually is
-    readablePath: file.get_parse_name(),
+    readablePath: readablePath ?? file.get_parse_name(),
     kind,
     file,
   };
@@ -370,7 +367,7 @@ const parseWorkspaceItem = (item: unknown): string | null => {
   ) {
     return item.configURIPath;
   } else {
-    l.error(`Failed to parse workspace item: ${JSON.stringify(item)}`);
+    console.error(`Failed to parse workspace item: ${JSON.stringify(item)}`);
     return null;
   }
 };
@@ -396,7 +393,7 @@ const getRecentItemsFromStorage = (
       : undefined;
 
   if (typeof openedPathsList === "undefined") {
-    l.error(
+    console.error(
       `Failed to find openedPathsList in storage: ${JSON.stringify(storage)}`
     );
     return [];
@@ -423,7 +420,7 @@ const getRecentItemsFromStorage = (
       if (typeof item === "string") {
         recentItems.push(createRecentItem("file", item));
       } else {
-        l.error(`Failed to parse recent file: ${JSON.stringify(item)}`);
+        console.error(`Failed to parse recent file: ${JSON.stringify(item)}`);
       }
     }
   }
@@ -436,11 +433,72 @@ const getRecentItemsFromStorage = (
       } else if (item && typeof item.fileUri === "string") {
         recentItems.push(createRecentItem("file", item.fileUri));
       } else {
-        l.error(`Failed to parse recent path: ${JSON.stringify(item)}`);
+        console.error(`Failed to parse recent path: ${JSON.stringify(item)}`);
       }
     }
   }
 
+  return recentItems;
+};
+
+/**
+ * Parse the `recently.opened` value from VS Code's state.vscdb (VS Code 1.64+).
+ * Uses the label field for a human-readable description of remote entries.
+ */
+const getRecentItemsFromRecentlyOpened = (
+  data: unknown
+): ReadonlyArray<RecentItem> => {
+  if (!data || typeof data !== "object") return [];
+  const obj = data as Record<string, unknown>;
+  if (!Array.isArray(obj.entries)) return [];
+
+  const recentItems: RecentItem[] = [];
+  for (const item of obj.entries as unknown[]) {
+    if (item && typeof item === "object") {
+      const entry = item as Record<string, unknown>;
+      const label = typeof entry.label === "string" ? entry.label : undefined;
+      if (typeof entry.folderUri === "string") {
+        recentItems.push(createRecentItem("workspace", entry.folderUri, label));
+      } else if (typeof entry.fileUri === "string") {
+        recentItems.push(createRecentItem("file", entry.fileUri, label));
+      }
+    }
+  }
+  return recentItems;
+};
+
+/**
+ * Read all local workspaces from VS Code's workspaceStorage directory.
+ * Each workspace has a workspace.json with a "folder" URI.
+ */
+const getItemsFromWorkspaceStorage = (
+  workspaceStorageDir: typeof Gio.File.prototype
+): ReadonlyArray<RecentItem> => {
+  const recentItems: RecentItem[] = [];
+  try {
+    const enumerator = workspaceStorageDir.enumerate_children("standard::name", 0, null);
+    let info;
+    while ((info = enumerator.next_file(null)) !== null) {
+      const wsJsonFile = workspaceStorageDir
+        .get_child(info.get_name())
+        .get_child("workspace.json");
+      try {
+        const [, contents] = wsJsonFile.load_contents(null);
+        const data = JSON.parse(new TextDecoder().decode(contents)) as unknown;
+        if (data && typeof data === "object") {
+          const entry = data as Record<string, unknown>;
+          if (typeof entry.folder === "string") {
+            recentItems.push(createRecentItem("workspace", entry.folder));
+          }
+        }
+      } catch (_) {
+        // workspace.json missing or malformed — skip
+      }
+    }
+    enumerator.close(null);
+  } catch (e) {
+    console.error(`Failed to enumerate workspaceStorage: ${e}`);
+  }
   return recentItems;
 };
 
@@ -454,93 +512,110 @@ const findVSCodeRecentItems = (
   configDirectoryName: string
 ): Promise<RecentItems> =>
   new Promise((resolve) => {
-    // TODO: Use async load contents for async IO, to avoid blocking the shell
-    const contents = Gio.File.new_for_path(GLib.get_user_config_dir())
+    const configDir = GLib.get_user_config_dir();
+    const allItems = new Map<string, RecentItem>();
+
+    const addItems = (items: ReadonlyArray<RecentItem>): void => {
+      for (const item of items) {
+        if (!allItems.has(item.id)) allItems.set(item.id, item);
+      }
+    };
+
+    // VS Code 1.64+: recently.opened in state.vscdb (covers remote VFS entries)
+    const dbPath = Gio.File.new_for_path(configDir)
       .get_child(configDirectoryName)
-      .get_child("storage.json")
-      .load_contents(null)[1];
+      .get_child("User")
+      .get_child("globalStorage")
+      .get_child("state.vscdb")
+      .get_path();
 
-    const recentItems = getRecentItemsFromStorage(
-      JSON.parse(ByteArray.toString(contents)) as unknown
-    );
+    if (dbPath) {
+      try {
+        const sqliteBin = GLib.find_program_in_path("sqlite3");
+        if (sqliteBin) {
+          const [, stdout] = GLib.spawn_sync(
+            null,
+            [
+              sqliteBin,
+              dbPath,
+              "SELECT value FROM ItemTable WHERE key='recently.opened'",
+            ],
+            null,
+            0,
+            null
+          );
+          if (stdout && stdout.length > 0) {
+            const value = new TextDecoder().decode(stdout).trim();
+            if (value) {
+              addItems(getRecentItemsFromRecentlyOpened(JSON.parse(value) as unknown));
+            }
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to read state.vscdb: ${e}`);
+      }
+    }
 
-    resolve(new Map(recentItems.map((item) => [item.id, item])));
+    // workspaceStorage: one workspace.json per ever-opened local workspace
+    const workspaceStorageDir = Gio.File.new_for_path(configDir)
+      .get_child(configDirectoryName)
+      .get_child("User")
+      .get_child("workspaceStorage");
+    addItems(getItemsFromWorkspaceStorage(workspaceStorageDir));
+
+    if (allItems.size > 0) {
+      resolve(allItems);
+      return;
+    }
+
+    // Fallback: old storage.json location (VS Code < 1.64)
+    try {
+      const contents = Gio.File.new_for_path(configDir)
+        .get_child(configDirectoryName)
+        .get_child("storage.json")
+        .load_contents(null)[1];
+
+      const recentItems = getRecentItemsFromStorage(
+        JSON.parse(new TextDecoder().decode(contents)) as unknown
+      );
+      resolve(new Map(recentItems.map((item) => [item.id, item])));
+    } catch (e) {
+      console.error(`Failed to read legacy storage.json: ${e}`);
+      resolve(new Map());
+    }
   });
 
-/**
- * The registered provider
- */
-// eslint-disable-next-line immutable/no-let
-let registeredProvider: "unregistered" | "registering" | SearchProvider =
-  "unregistered";
+export default class VSCodeSearchProvider extends Extension {
+  private _provider: SearchProvider | null = null;
 
-/**
- * Initialize this extension.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars,@typescript-eslint/no-empty-function
-function init(): void {}
-
-/**
- * Register a search provider for VSCode.
- *
- * @param vscode The VSCode app
- * @returns A promise which resolves once the provider is registered.
- */
-const registerProvider = (vscode: CodeAppInfo): Promise<void> => {
-  registeredProvider = "registering";
-  return findVSCodeRecentItems(vscode.configDirectoryName)
-    .then((items) => {
-      // If the user hasn't disabled the extension meanwhile create the
-      // search provider and registered it, both in our global variable
-      // and for gnome shell.
-      if (registeredProvider === "registering") {
-        registeredProvider = createProvider(
+  enable(): void {
+    const vscode = findVSCode();
+    if (!vscode) {
+      Main.notifyError("VSCode not found", "Try installing VSCode or VSCode OSS.");
+      return;
+    }
+    findVSCodeRecentItems(vscode.configDirectoryName)
+      .then((items) => {
+        if (this._provider !== null) return; // disabled meanwhile
+        this._provider = createProvider(
+          this.uuid,
           vscode.app,
-          ExtensionUtils.getSettings(),
+          this.getSettings(),
           items
         );
-        Main.overview.viewSelector._searchResults._registerProvider(
-          registeredProvider
-        );
-      }
-    })
-    .catch((error) => {
-      const stack = error.stack || "<no stacktrace>";
-      l.error(
-        `Failed to get recent VSCode entries: ${error.message}\n${stack}`
-      );
-      Main.notifyError("Failed to get recent VSCode entries", error.message);
-    });
-};
+        Main.overview.searchController.addProvider(this._provider);
+      })
+      .catch((error: Error) => {
+        const stack = (error as {stack?: string}).stack || "<no stacktrace>";
+        console.error(`Failed to get recent VSCode entries: ${error.message}\n${stack}`);
+        Main.notifyError("Failed to get recent VSCode entries", error.message);
+      });
+  }
 
-/**
- * Enable this extension.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function enable(): void {
-  if (registeredProvider === "unregistered") {
-    const vscode = findVSCode();
-    if (vscode) {
-      registerProvider(vscode);
-    } else {
-      Main.notifyError(
-        "VSCode not found",
-        "Try installing VSCode or VSCode OSS."
-      );
+  disable(): void {
+    if (this._provider !== null) {
+      Main.overview.searchController.removeProvider(this._provider);
+      this._provider = null;
     }
   }
-}
-
-/**
- * Disable this extension.
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function disable(): void {
-  if (typeof registeredProvider !== "string") {
-    Main.overview.viewSelector._searchResults._unregisterProvider(
-      registeredProvider
-    );
-  }
-  // Make sure to always switch back to unregistered, so that the user can re-enable it.
-  registeredProvider = "unregistered";
 }

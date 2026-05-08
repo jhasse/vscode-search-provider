@@ -1,9 +1,8 @@
 {
   "compilerOptions": {
-    "target": "es2017",
-    // GJS doesn't have modules
-    "module": "none",
-    "lib": ["es2017"],
+    "target": "es2020",
+    "module": "es2020",
+    "lib": ["es2020", "dom"],
     "removeComments": false,
 
     /* Strict Type-Checking Options */
