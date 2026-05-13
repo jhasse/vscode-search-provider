@@ -60,7 +60,6 @@ const findVSCode = (): CodeAppInfo | null => {
   for (const [desktopId, configDirectoryName] of candidates) {
     const app = GioUnix.DesktopAppInfo.new(desktopId);
     if (app) {
-      console.log(`Found code at desktop app ${desktopId}`);
       return {
         app,
         configDirectoryName,
@@ -373,7 +372,6 @@ const parseWorkspaceItem = (item: unknown): string | null => {
   ) {
     return item.configURIPath;
   } else {
-    console.error(`Failed to parse workspace item: ${JSON.stringify(item)}`);
     return null;
   }
 };
@@ -399,9 +397,6 @@ const getRecentItemsFromStorage = (
       : undefined;
 
   if (typeof openedPathsList === "undefined") {
-    console.error(
-      `Failed to find openedPathsList in storage: ${JSON.stringify(storage)}`
-    );
     return [];
   }
 
@@ -425,8 +420,6 @@ const getRecentItemsFromStorage = (
     for (const item of recentFiles) {
       if (typeof item === "string") {
         recentItems.push(createRecentItem("file", item));
-      } else {
-        console.error(`Failed to parse recent file: ${JSON.stringify(item)}`);
       }
     }
   }
@@ -438,8 +431,6 @@ const getRecentItemsFromStorage = (
         recentItems.push(createRecentItem("workspace", item.folderUri));
       } else if (item && typeof item.fileUri === "string") {
         recentItems.push(createRecentItem("file", item.fileUri));
-      } else {
-        console.error(`Failed to parse recent path: ${JSON.stringify(item)}`);
       }
     }
   }
@@ -473,47 +464,97 @@ const getRecentItemsFromRecentlyOpened = (
   return recentItems;
 };
 
+const readWorkspaceEntry = async (
+  wsDir: typeof Gio.File.prototype
+): Promise<{ mtime: number; item: RecentItem } | null> => {
+  let contents: Uint8Array;
+  try {
+    [contents] = await wsDir.get_child("workspace.json").load_contents_async(null);
+  } catch (_) {
+    return null;
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(new TextDecoder().decode(contents));
+  } catch (_) {
+    return null;
+  }
+  if (!data || typeof data !== "object") return null;
+  const folder = (data as Record<string, unknown>).folder;
+  if (typeof folder !== "string") return null;
+  // mtime of state.vscdb is our proxy for last-used time
+  let mtime = 0;
+  try {
+    const dbInfo = wsDir.get_child("state.vscdb").query_info("time::modified", 0, null);
+    mtime = dbInfo.get_attribute_uint64("time::modified");
+  } catch (_) {
+    // no state.vscdb — use 0 (goes to end)
+  }
+  return { mtime, item: createRecentItem("workspace", folder) };
+};
+
 /**
  * Read all local workspaces from VS Code's workspaceStorage directory,
  * sorted by most recently used (mtime of state.vscdb descending).
  */
-const getItemsFromWorkspaceStorage = (
+const getItemsFromWorkspaceStorage = async (
   workspaceStorageDir: typeof Gio.File.prototype
-): ReadonlyArray<RecentItem> => {
-  const entries: { mtime: number; item: RecentItem }[] = [];
+): Promise<ReadonlyArray<RecentItem>> => {
+  const wsDirs: (typeof Gio.File.prototype)[] = [];
   try {
     const enumerator = workspaceStorageDir.enumerate_children("standard::name", 0, null);
     let info;
     while ((info = enumerator.next_file(null)) !== null) {
-      const wsDir = workspaceStorageDir.get_child(info.get_name());
-      const wsJsonFile = wsDir.get_child("workspace.json");
-      try {
-        const [, contents] = wsJsonFile.load_contents(null);
-        const data = JSON.parse(new TextDecoder().decode(contents)) as unknown;
-        if (data && typeof data === "object") {
-          const entry = data as Record<string, unknown>;
-          if (typeof entry.folder === "string") {
-            // Use mtime of state.vscdb as a proxy for last-used time
-            let mtime = 0;
-            try {
-              const dbInfo = wsDir.get_child("state.vscdb").query_info("time::modified", 0, null);
-              mtime = dbInfo.get_attribute_uint64("time::modified");
-            } catch (_) {
-              // no state.vscdb — use 0 (goes to end)
-            }
-            entries.push({ mtime, item: createRecentItem("workspace", entry.folder) });
-          }
-        }
-      } catch (_) {
-        // workspace.json missing or malformed — skip
-      }
+      wsDirs.push(workspaceStorageDir.get_child(info.get_name()));
     }
     enumerator.close(null);
   } catch (e) {
-    console.error(`Failed to enumerate workspaceStorage: ${e}`);
+    console.error(`Failed to enumerate workspaceStorage: ${e as Error}`);
+    return [];
   }
+  const entries = (await Promise.all(wsDirs.map(readWorkspaceEntry))).filter(
+    (e): e is { mtime: number; item: RecentItem } => e !== null
+  );
   entries.sort((a, b) => b.mtime - a.mtime);
   return entries.map((e) => e.item);
+};
+
+const readRecentlyOpenedFromDb = async (
+  dbPath: string
+): Promise<ReadonlyArray<RecentItem>> => {
+  const sqliteBin = GLib.find_program_in_path("sqlite3");
+  if (!sqliteBin) return [];
+  try {
+    const proc = Gio.Subprocess.new(
+      [
+        sqliteBin,
+        dbPath,
+        "SELECT value FROM ItemTable WHERE key='recently.opened'",
+      ],
+      Gio.SubprocessFlags.STDOUT_PIPE
+    );
+    const [, stdout] = await proc.communicate_utf8_async(null, null);
+    const value = stdout.trim();
+    if (!value) return [];
+    return getRecentItemsFromRecentlyOpened(JSON.parse(value) as unknown);
+  } catch (e) {
+    console.error(`Failed to read state.vscdb: ${e as Error}`);
+    return [];
+  }
+};
+
+const readLegacyStorageJson = async (
+  storageFile: typeof Gio.File.prototype
+): Promise<ReadonlyArray<RecentItem>> => {
+  try {
+    const [contents] = await storageFile.load_contents_async(null);
+    return getRecentItemsFromStorage(
+      JSON.parse(new TextDecoder().decode(contents)) as unknown
+    );
+  } catch (e) {
+    console.error(`Failed to read legacy storage.json: ${e as Error}`);
+    return [];
+  }
 };
 
 /**
@@ -522,82 +563,40 @@ const getItemsFromWorkspaceStorage = (
  * @param configDirectoryName The name of the config directory of the code app
  * @returns A promise with recent items
  */
-const findVSCodeRecentItems = (
+const findVSCodeRecentItems = async (
   configDirectoryName: string
-): Promise<RecentItems> =>
-  new Promise((resolve) => {
-    const configDir = GLib.get_user_config_dir();
-    const allItems = new Map<string, RecentItem>();
+): Promise<RecentItems> => {
+  const configDir = GLib.get_user_config_dir();
+  const userDir = Gio.File.new_for_path(configDir)
+    .get_child(configDirectoryName)
+    .get_child("User");
 
-    const addItems = (items: ReadonlyArray<RecentItem>): void => {
-      for (const item of items) {
-        if (!allItems.has(item.id)) allItems.set(item.id, item);
-      }
-    };
+  const allItems = new Map<string, RecentItem>();
+  const addItems = (items: ReadonlyArray<RecentItem>): void => {
+    for (const item of items) {
+      if (!allItems.has(item.id)) allItems.set(item.id, item);
+    }
+  };
 
-    // workspaceStorage: local workspaces sorted by mtime (most recent first)
-    const workspaceStorageDir = Gio.File.new_for_path(configDir)
+  // workspaceStorage: local workspaces sorted by mtime (most recent first)
+  addItems(await getItemsFromWorkspaceStorage(userDir.get_child("workspaceStorage")));
+
+  // recently.opened in state.vscdb: append any entries not already added (e.g. remote VFS)
+  const dbPath = userDir.get_child("globalStorage").get_child("state.vscdb").get_path();
+  if (dbPath) {
+    addItems(await readRecentlyOpenedFromDb(dbPath));
+  }
+
+  if (allItems.size > 0) return allItems;
+
+  // Fallback: old storage.json location (VS Code < 1.64)
+  const legacyItems = await readLegacyStorageJson(
+    Gio.File.new_for_path(configDir)
       .get_child(configDirectoryName)
-      .get_child("User")
-      .get_child("workspaceStorage");
-    addItems(getItemsFromWorkspaceStorage(workspaceStorageDir));
-
-    // recently.opened in state.vscdb: append any entries not already added (e.g. remote VFS)
-    const dbPath = Gio.File.new_for_path(configDir)
-      .get_child(configDirectoryName)
-      .get_child("User")
-      .get_child("globalStorage")
-      .get_child("state.vscdb")
-      .get_path();
-
-    if (dbPath) {
-      try {
-        const sqliteBin = GLib.find_program_in_path("sqlite3");
-        if (sqliteBin) {
-          const [, stdout] = GLib.spawn_sync(
-            null,
-            [
-              sqliteBin,
-              dbPath,
-              "SELECT value FROM ItemTable WHERE key='recently.opened'",
-            ],
-            null,
-            0,
-            null
-          );
-          if (stdout && stdout.length > 0) {
-            const value = new TextDecoder().decode(stdout).trim();
-            if (value) {
-              addItems(getRecentItemsFromRecentlyOpened(JSON.parse(value) as unknown));
-            }
-          }
-        }
-      } catch (e) {
-        console.error(`Failed to read state.vscdb: ${e}`);
-      }
-    }
-
-    if (allItems.size > 0) {
-      resolve(allItems);
-      return;
-    }
-
-    // Fallback: old storage.json location (VS Code < 1.64)
-    try {
-      const contents = Gio.File.new_for_path(configDir)
-        .get_child(configDirectoryName)
-        .get_child("storage.json")
-        .load_contents(null)[1];
-
-      const recentItems = getRecentItemsFromStorage(
-        JSON.parse(new TextDecoder().decode(contents)) as unknown
-      );
-      resolve(new Map(recentItems.map((item) => [item.id, item])));
-    } catch (e) {
-      console.error(`Failed to read legacy storage.json: ${e}`);
-      resolve(new Map());
-    }
-  });
+      .get_child("storage.json")
+  );
+  return new Map(legacyItems.map((item) => [item.id, item]));
+};
 
 export default class VSCodeSearchProvider extends Extension {
   private _provider: SearchProvider | null = null;

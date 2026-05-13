@@ -23,7 +23,7 @@ declare module "gi://Gio" {
     get_path(): string | null;
     get_basename(): string | null;
     get_parse_name(): string;
-    load_contents(cancellable: Cancellable | null): [boolean, Uint8Array, string];
+    load_contents_async(cancellable: Cancellable | null): Promise<[Uint8Array, string]>;
     enumerate_children(attributes: string, flags: number, cancellable: Cancellable | null): FileEnumerator;
     query_info(attributes: string, flags: number, cancellable: Cancellable | null): FileInfo;
   }
@@ -53,6 +53,20 @@ declare module "gi://Gio" {
     get_boolean(key: string): boolean;
   }
 
+  export enum SubprocessFlags {
+    NONE = 0,
+    STDOUT_PIPE = 1 << 2,
+  }
+
+  export class Subprocess {
+    private constructor();
+    static new(argv: string[], flags: SubprocessFlags): Subprocess;
+    communicate_utf8_async(
+      stdin_buf: string | null,
+      cancellable: Cancellable | null
+    ): Promise<[boolean, string, string]>;
+  }
+
   const _default: {
     File: typeof File;
     FileInfo: typeof FileInfo;
@@ -62,6 +76,8 @@ declare module "gi://Gio" {
     Icon: typeof Icon;
     AppInfo: typeof AppInfo;
     GSettings: typeof GSettings;
+    Subprocess: typeof Subprocess;
+    SubprocessFlags: typeof SubprocessFlags;
   };
   export default _default;
 }
