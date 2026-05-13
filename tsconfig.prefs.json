@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.base.json",
-  "compilerOptions": {
-    "outFile": "./prefs.js"
-  },
-  "files": ["./prefs.ts"],
-  "include": ["types/**/*.d.ts"]
-}
