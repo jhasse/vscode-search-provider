@@ -5,6 +5,7 @@ declare module "gi://Gio" {
   export class FileInfo {
     private constructor();
     get_name(): string;
+    get_attribute_uint64(attribute: string): number;
   }
 
   export class FileEnumerator {
@@ -24,6 +25,7 @@ declare module "gi://Gio" {
     get_parse_name(): string;
     load_contents(cancellable: Cancellable | null): [boolean, Uint8Array, string];
     enumerate_children(attributes: string, flags: number, cancellable: Cancellable | null): FileEnumerator;
+    query_info(attributes: string, flags: number, cancellable: Cancellable | null): FileInfo;
   }
 
   export class Cancellable {

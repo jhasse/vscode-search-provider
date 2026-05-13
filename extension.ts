@@ -474,27 +474,34 @@ const getRecentItemsFromRecentlyOpened = (
 };
 
 /**
- * Read all local workspaces from VS Code's workspaceStorage directory.
- * Each workspace has a workspace.json with a "folder" URI.
+ * Read all local workspaces from VS Code's workspaceStorage directory,
+ * sorted by most recently used (mtime of state.vscdb descending).
  */
 const getItemsFromWorkspaceStorage = (
   workspaceStorageDir: typeof Gio.File.prototype
 ): ReadonlyArray<RecentItem> => {
-  const recentItems: RecentItem[] = [];
+  const entries: { mtime: number; item: RecentItem }[] = [];
   try {
     const enumerator = workspaceStorageDir.enumerate_children("standard::name", 0, null);
     let info;
     while ((info = enumerator.next_file(null)) !== null) {
-      const wsJsonFile = workspaceStorageDir
-        .get_child(info.get_name())
-        .get_child("workspace.json");
+      const wsDir = workspaceStorageDir.get_child(info.get_name());
+      const wsJsonFile = wsDir.get_child("workspace.json");
       try {
         const [, contents] = wsJsonFile.load_contents(null);
         const data = JSON.parse(new TextDecoder().decode(contents)) as unknown;
         if (data && typeof data === "object") {
           const entry = data as Record<string, unknown>;
           if (typeof entry.folder === "string") {
-            recentItems.push(createRecentItem("workspace", entry.folder));
+            // Use mtime of state.vscdb as a proxy for last-used time
+            let mtime = 0;
+            try {
+              const dbInfo = wsDir.get_child("state.vscdb").query_info("time::modified", 0, null);
+              mtime = dbInfo.get_attribute_uint64("time::modified");
+            } catch (_) {
+              // no state.vscdb — use 0 (goes to end)
+            }
+            entries.push({ mtime, item: createRecentItem("workspace", entry.folder) });
           }
         }
       } catch (_) {
@@ -505,7 +512,8 @@ const getItemsFromWorkspaceStorage = (
   } catch (e) {
     console.error(`Failed to enumerate workspaceStorage: ${e}`);
   }
-  return recentItems;
+  entries.sort((a, b) => b.mtime - a.mtime);
+  return entries.map((e) => e.item);
 };
 
 /**
@@ -527,7 +535,14 @@ const findVSCodeRecentItems = (
       }
     };
 
-    // VS Code 1.64+: recently.opened in state.vscdb (covers remote VFS entries)
+    // workspaceStorage: local workspaces sorted by mtime (most recent first)
+    const workspaceStorageDir = Gio.File.new_for_path(configDir)
+      .get_child(configDirectoryName)
+      .get_child("User")
+      .get_child("workspaceStorage");
+    addItems(getItemsFromWorkspaceStorage(workspaceStorageDir));
+
+    // recently.opened in state.vscdb: append any entries not already added (e.g. remote VFS)
     const dbPath = Gio.File.new_for_path(configDir)
       .get_child(configDirectoryName)
       .get_child("User")
@@ -561,13 +576,6 @@ const findVSCodeRecentItems = (
         console.error(`Failed to read state.vscdb: ${e}`);
       }
     }
-
-    // workspaceStorage: one workspace.json per ever-opened local workspace
-    const workspaceStorageDir = Gio.File.new_for_path(configDir)
-      .get_child(configDirectoryName)
-      .get_child("User")
-      .get_child("workspaceStorage");
-    addItems(getItemsFromWorkspaceStorage(workspaceStorageDir));
 
     if (allItems.size > 0) {
       resolve(allItems);
