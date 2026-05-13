@@ -2,8 +2,8 @@
   "name": "vscode-search-provider",
   "version": "17",
   "description": "Provide recent VSCode projects as search results in overview",
-  "repository": "https://github.com/jomik/vscode-search-provider.git",
-  "author": "Jonas Holst Damtoft",
+  "repository": "https://github.com/jhasse/vscode-search-provider.git",
+  "author": "Jan Niklas Hasse",
   "license": "MIT",
   "private": true,
   "devDependencies": {

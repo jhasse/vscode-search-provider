@@ -276,7 +276,7 @@ THE SOFTWARE.
             <property name="can_focus">True</property>
             <property name="receives_default">True</property>
             <property name="relief">none</property>
-            <property name="uri">https://github.com/Jomik/vscode-search-provider</property>
+            <property name="uri">https://github.com/jhasse/vscode-search-provider</property>
           </object>
           <packing>
             <property name="expand">False</property>
@@ -291,7 +291,7 @@ THE SOFTWARE.
             <property name="can_focus">True</property>
             <property name="receives_default">True</property>
             <property name="relief">none</property>
-            <property name="uri">https://github.com/Jomik/vscode-search-provider/issues</property>
+            <property name="uri">https://github.com/jhasse/vscode-search-provider/issues</property>
           </object>
           <packing>
             <property name="expand">False</property>

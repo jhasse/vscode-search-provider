@@ -20,6 +20,6 @@ jobs:
       - run: yarn package
       - uses: softprops/action-gh-release@v1
         with:
-          files: vscode-search-provider@jomik.org.shell-extension.zip
+          files: vscode-search-provider@bixense.com.shell-extension.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
